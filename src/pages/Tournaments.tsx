@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import TournamentCard from '../components/tournaments/TournamentCard';
 import TournamentFilters from '../components/tournaments/TournamentFilters';
@@ -13,8 +13,18 @@ export default function Tournaments() {
   const { user } = useAuth();
 
   useEffect(() => {
-    fetchTournaments();
-  }, [filter]);
+    if (user) {
+      fetchTournaments();
+      const subscription = subscribeToTournaments();
+      return () => {
+        subscription.unsubscribe();
+      };
+    }
+  }, [filter, user]);
+
+  if (!user) {
+    return <Navigate to="/auth" />;
+  }
 
   async function fetchTournaments() {
     try {
@@ -63,10 +73,18 @@ export default function Tournaments() {
     }
   }
 
-  const filteredTournaments = tournaments.filter(tournament => {
-    if (filter === 'all') return true;
-    return tournament.status === filter;
-  });
+  function subscribeToTournaments() {
+    return supabase
+      .channel('tournaments')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'tournaments'
+      }, () => {
+        fetchTournaments();
+      })
+      .subscribe();
+  }
 
   return (
     <div className="space-y-6">
@@ -88,9 +106,9 @@ export default function Tournaments() {
         <div className="text-center py-8">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500 mx-auto"></div>
         </div>
-      ) : filteredTournaments.length > 0 ? (
+      ) : tournaments.length > 0 ? (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {filteredTournaments.map((tournament) => (
+          {tournaments.map((tournament) => (
             <TournamentCard key={tournament.id} tournament={tournament} />
           ))}
         </div>

@@ -1,92 +1,81 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Send } from 'lucide-react';
-import { ChatMessage } from '../../types/chat';
+import { Send, Shield } from 'lucide-react';
 
-interface Props {
-  tournamentId: string;
-}
-
-export default function TournamentChat({ tournamentId }: Props) {
+export default function TournamentChat({ tournamentId }: { tournamentId: string }) {
   const { user } = useAuth();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
-  const [isParticipant, setIsParticipant] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      checkParticipantStatus();
-      fetchMessages();
-      subscribeToMessages();
-    }
-  }, [tournamentId, user]);
+    fetchMessages();
+    const subscription = subscribeToMessages();
+    return () => subscription.unsubscribe();
+  }, [tournamentId]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  async function checkParticipantStatus() {
-    try {
-      const { data } = await supabase
-        .from('tournament_participants')
-        .select('id')
-        .eq('tournament_id', tournamentId)
-        .eq('user_id', user?.id)
-        .single();
+  async function fetchMessages() {
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select(`
+        *,
+        users:user_id (
+          username,
+          role
+        )
+      `)
+      .eq('tournament_id', tournamentId)
+      .order('created_at', { ascending: true });
 
-      setIsParticipant(!!data);
-    } catch (error) {
-      console.error('Error checking participant status:', error);
-    } finally {
-      setLoading(false);
+    if (!error) {
+      setMessages(data);
     }
   }
 
-  async function fetchMessages() {
-    const { data } = await supabase
-      .from('chat_messages')
-      .select('*, users:user_id(username)')
-      .eq('tournament_id', tournamentId)
-      .order('created_at', { ascending: true });
-    
-    if (data) setMessages(data);
-  }
-
   function subscribeToMessages() {
-    const subscription = supabase
-      .channel('chat_messages')
+    return supabase
+      .channel(`chat:${tournamentId}`)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
         table: 'chat_messages',
-        filter: `tournament_id=eq.${tournamentId}`,
-      }, (payload) => {
-        setMessages(prev => [...prev, payload.new as ChatMessage]);
+        filter: `tournament_id=eq.${tournamentId}`
+      }, payload => {
+        fetchMessages();
       })
       .subscribe();
-
-    return () => {
-      subscription.unsubscribe();
-    };
   }
 
-  async function sendMessage(e: React.FormEvent) {
+  async function sendMessage(e) {
     e.preventDefault();
-    if (!newMessage.trim() || !user || !isParticipant) return;
+    if (!newMessage.trim() || !user) return;
 
-    const { error } = await supabase
-      .from('chat_messages')
-      .insert({
-        tournament_id: tournamentId,
-        user_id: user.id,
-        message: newMessage.trim(),
-      });
+    try {
+      setLoading(true);
+      const { error } = await supabase
+        .from('chat_messages')
+        .insert([
+          {
+            tournament_id: tournamentId,
+            user_id: user.id,
+            message: newMessage.trim(),
+            is_admin: user.role === 'admin'
+          }
+        ]);
 
-    if (!error) {
+      if (error) throw error;
       setNewMessage('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+      alert('Failed to send message');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -94,18 +83,10 @@ export default function TournamentChat({ tournamentId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }
 
-  if (loading) {
-    return (
-      <div className="bg-gray-800 rounded-lg p-4">
-        <div className="animate-pulse h-[600px]"></div>
-      </div>
-    );
-  }
-
   return (
     <div className="bg-gray-800 rounded-lg flex flex-col h-[600px]">
       <div className="p-4 border-b border-gray-700">
-        <h2 className="text-xl font-semibold">Tournament Chat</h2>
+        <h2 className="text-xl font-bold">Tournament Chat</h2>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -116,14 +97,21 @@ export default function TournamentChat({ tournamentId }: Props) {
               message.user_id === user?.id ? 'items-end' : 'items-start'
             }`}
           >
-            <div className="text-sm text-gray-400">
-              {message.users?.username}
+            <div className="flex items-center space-x-2 text-sm text-gray-400">
+              <span>{message.users?.username}</span>
+              {message.users?.role === 'admin' && (
+                <Shield className="w-4 h-4 text-purple-500" />
+              )}
             </div>
-            <div className={`max-w-[80%] rounded-lg px-4 py-2 ${
-              message.user_id === user?.id
-                ? 'bg-purple-600'
-                : 'bg-gray-700'
-            }`}>
+            <div
+              className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                message.user_id === user?.id
+                  ? 'bg-purple-600'
+                  : message.users?.role === 'admin'
+                  ? 'bg-gradient-to-r from-purple-600 to-pink-600'
+                  : 'bg-gray-700'
+              }`}
+            >
               {message.message}
             </div>
           </div>
@@ -131,32 +119,26 @@ export default function TournamentChat({ tournamentId }: Props) {
         <div ref={messagesEndRef} />
       </div>
 
-      {isParticipant ? (
-        <form onSubmit={sendMessage} className="p-4 border-t border-gray-700">
-          <div className="flex space-x-2">
-            <input
-              type="text"
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              placeholder="Type a message..."
-              className="flex-1 bg-gray-700 rounded-lg px-4 py-2 focus:outline-none 
-                       focus:ring-2 focus:ring-purple-500"
-            />
-            <button
-              type="submit"
-              disabled={!newMessage.trim()}
-              className="bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 
-                       disabled:cursor-not-allowed p-2 rounded-lg"
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </div>
-        </form>
-      ) : (
-        <div className="p-4 border-t border-gray-700 text-center text-gray-400">
-          You must be a participant to chat in this tournament
+      <form onSubmit={sendMessage} className="p-4 border-t border-gray-700">
+        <div className="flex space-x-2">
+          <input
+            type="text"
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            placeholder="Type a message..."
+            className="flex-1 bg-gray-700 rounded-lg px-4 py-2 focus:outline-none 
+                     focus:ring-2 focus:ring-purple-500"
+          />
+          <button
+            type="submit"
+            disabled={loading || !newMessage.trim()}
+            className="bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 
+                     disabled:cursor-not-allowed p-2 rounded-lg"
+          >
+            <Send className="w-5 h-5" />
+          </button>
         </div>
-      )}
+      </form>
     </div>
   );
 }

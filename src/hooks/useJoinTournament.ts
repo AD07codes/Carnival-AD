@@ -7,7 +7,9 @@ export function useJoinTournament() {
   const { user } = useAuth();
 
   async function joinTournament(tournamentId: string) {
-    if (!user) return;
+    if (!user) {
+      throw new Error('Must be logged in to join tournament');
+    }
     
     try {
       setLoading(true);
@@ -23,29 +25,43 @@ export function useJoinTournament() {
       if (existingRequest) {
         if (existingRequest.status === 'pending') {
           alert('Your request is still pending admin approval');
+          return;
         } else if (existingRequest.status === 'approved') {
           alert('You are already registered for this tournament');
+          return;
         } else {
           alert('Your previous request was rejected. Please contact admin for more information');
+          return;
         }
-        return;
       }
 
-      // Create join request
+      // Create join request with real-time notification
       const { error } = await supabase
         .from('tournament_requests')
         .insert({
           tournament_id: tournamentId,
           user_id: user.id,
-          status: 'pending'
+          status: 'pending',
+          created_at: new Date().toISOString()
         });
 
       if (error) throw error;
 
-      alert('Join request submitted! Waiting for admin approval. You will be notified once approved.');
+      // Store request in localStorage for offline support
+      const request = {
+        tournamentId,
+        userId: user.id,
+        timestamp: new Date().toISOString(),
+        status: 'pending'
+      };
+      
+      localStorage.setItem(`join_request_${tournamentId}`, JSON.stringify(request));
+
+      alert('Join request submitted! Waiting for admin approval.');
     } catch (error: any) {
       console.error('Error joining tournament:', error);
       alert(error.message || 'Failed to join tournament');
+      throw error;
     } finally {
       setLoading(false);
     }
